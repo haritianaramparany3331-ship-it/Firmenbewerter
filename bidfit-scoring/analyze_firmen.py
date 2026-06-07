@@ -1,160 +1,396 @@
 """
-analyze_firmen.py
------------------
-Liest firmenliste.csv ein, analysiert jede Zeile mit GPT-4.1-mini
-und speichert die Ergebnisse in results.csv.
+analyze_firmen.py – BidFit Bewerter v3.0
+-----------------------------------------
+Ordnerstruktur:
+  gescrapte_listen/   ← Indeed-Scraping-Ergebnisse
+                         Namensschema: <keyword>IndeedScraped.csv
+                         z.B. tenderManagerIndeedScraped.csv
+                              speditionIndeedScraped.csv
+
+  results/            ← Bewertungen von diesem Script
+                         Namensschema: <keyword>Result.csv
+                         z.B. tenderManagerResult.csv
+                              speditionResult.csv
+
+WORKFLOW:
+  Keyword in Indeed scrapen
+    → <keyword>IndeedScraped.csv in gescrapte_listen/ ablegen
+    → python analyze_firmen.py
+    → <keyword>Result.csv erscheint in results/
+    → Firmen kontaktieren
 
 ANLEITUNG:
-1. Trage deinen OpenAI API Key unten bei API_KEY ein (Zeile 22)
-2. Stelle sicher, dass firmenliste.csv im gleichen Ordner liegt
-3. Starte das Script mit: python analyze_firmen.py
+  1. OpenAI API Key bei API_KEY eintragen
+  2. Gescrapte CSV-Dateien in gescrapte_listen/ ablegen
+  3. Ausführen: python analyze_firmen.py
+     Das Script verarbeitet alle CSVs im Ordner automatisch.
+
+VORAUSSETZUNGEN:
+  pip install openai pandas --upgrade
+  (openai >= 1.51 für Responses-API + web_search_preview)
 """
 
-import pandas as pd
+import re
 import json
 import time
+from pathlib import Path
+
+import pandas as pd
 from openai import OpenAI
 
 # ============================================================
-# HIER deinen OpenAI API Key eintragen:
-API_KEY = "REMOVED"
+API_KEY       = ""      # <-- OpenAI API Key hier eintragen
+MODEL         = "gpt-4o-mini" # Responses-API + web_search_preview benötigen
+                               # gpt-4o oder gpt-4o-mini.
+INPUT_FOLDER  = "gescrapte_listen"
+OUTPUT_FOLDER = "results"
 # ============================================================
 
-# OpenAI Client erstellen
 client = OpenAI(api_key=API_KEY)
 
-# Die Begriffe, nach denen GPT suchen soll
+# Keywords für spätere Verwendung (momentan nicht aktiv im Prompt)
 KEYWORDS = [
-    "Tender Management",
-    "Tender Manager",
-    "Bid Management",
-    "Ausschreibungsmanagement",
-    "Angebotsmanagement",
-    "Kontraktlogistik",
-    "3PL",
-    "Supply Chain Solutions",
-    "Strategic Sales",
+    "Tender Management", "Tender Manager", "Bid Management",
+    "Ausschreibungsmanagement", "Angebotsmanagement", "Kontraktlogistik",
+    "3PL", "Supply Chain Solutions", "Strategic Sales",
     "Key Account Manager Logistik",
 ]
 
-def analyze_company(company_name: str, description: str, position: str) -> dict:
+BIDFIT_CONTEXT: str = ""  # Einmalig beim Start befüllt, gilt für alle Dateien
+
+
+# ── Dateinamen-Hilfsfunktionen ───────────────────────────────────────────────
+
+def camel_to_words(text: str) -> str:
     """
-    Schickt die Unternehmensdaten an GPT und bekommt eine JSON-Analyse zurück.
-    Gibt ein dict mit: qualified, score, evidence, reason
+    Wandelt camelCase in lesbare Wörter um.
+      tenderManager          → Tender Manager
+      keyAccountManagerLogistik → Key Account Manager Logistik
+      3PL                    → 3PL
+      spedition              → Spedition
     """
+    result = re.sub(r'([a-z])([A-Z])', r'\1 \2', text).strip()
+    return (result[0].upper() + result[1:]) if result else text
 
-    # Prompt für GPT aufbauen
-    prompt = f"""
-Du bist ein Experte für Logistik und Ausschreibungen (Tenders/Bids).
 
-Analysiere folgendes Unternehmen und entscheide, ob es wahrscheinlich 
-an Ausschreibungen/Tendern teilnimmt oder diese durchführt.
+def keyword_from_path(filepath: Path) -> str:
+    """
+    Leitet das Suchkeyword aus dem Dateinamen ab.
+      tenderManagerIndeedScraped.csv → 'Tender Manager'
+      speditionIndeedScraped.csv     → 'Spedition'
+      3PLIndeedScraped.csv           → '3PL'
+    Falls kein 'IndeedScraped'-Suffix vorhanden: Dateiname direkt nutzen.
+    """
+    stem = filepath.stem  # z.B. tenderManagerIndeedScraped
+    base = re.sub(r'[Ii]ndeed[Ss]craped$', '', stem).strip() or stem
+    return camel_to_words(base)
 
-Unternehmen: {company_name}
-Position: {position}
-Beschreibung: {description[:3000]}
 
-Suche besonders nach diesen Begriffen oder ähnlichen Konzepten:
-{", ".join(KEYWORDS)}
+def output_path_from_input(filepath: Path) -> Path:
+    """
+    Berechnet den Ausgabepfad aus dem Eingabepfad.
+      gescrapte_listen/tenderManagerIndeedScraped.csv
+        → results/tenderManagerResult.csv
+    """
+    stem = filepath.stem
+    base = re.sub(r'[Ii]ndeed[Ss]craped$', '', stem).strip() or stem
+    return Path(OUTPUT_FOLDER) / f"{base}Result.csv"
 
-Antworte NUR mit einem JSON-Objekt in diesem Format (kein Text davor oder danach):
-{{
-  "qualified": true oder false,
-  "score": Zahl zwischen 0 und 100,
-  "evidence": ["gefundener Begriff 1", "gefundener Begriff 2"],
-  "reason": "Kurze Begründung auf Deutsch"
-}}
 
-- qualified: true wenn score >= 50
-- score: 0 = kein Hinweis, 100 = sehr starke Hinweise
-- evidence: Liste der gefundenen Schlüsselbegriffe aus dem Text
-- reason: 1-2 Sätze Begründung
-"""
+# ── Allgemeine Hilfsfunktionen ───────────────────────────────────────────────
 
+def extract_text(response) -> str:
+    """Extrahiert reinen Text aus einer OpenAI Responses-API-Antwort."""
+    parts = []
     try:
-        # API-Aufruf an GPT-4.1-mini
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,  # 0 = konsistentere Antworten
-            max_tokens=400,
+        for item in response.output:
+            if getattr(item, "type", None) == "message":
+                for part in getattr(item, "content", []):
+                    text = getattr(part, "text", None)
+                    if text:
+                        parts.append(text)
+    except Exception:
+        pass
+    return "".join(parts).strip()
+
+
+def clean_json(raw: str) -> str:
+    """Entfernt Markdown-Backticks, die das Modell manchmal trotz Anweisung setzt."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = [l for l in raw.split("\n") if not l.strip().startswith("```")]
+        raw = "\n".join(lines).strip()
+    return raw
+
+
+def _default_result(reason: str) -> dict:
+    """Standardwerte bei API-Fehler oder ungültigem JSON."""
+    return {
+        "website":                              None,
+        "telefon":                              None,
+        "email":                                None,
+        "score":                                0,
+        "qualified":                            False,
+        "nimmt_an_ausschreibungen_teil":        "keine Info",
+        "schreibt_ausschreibungen_auf_website": "keine Info",
+        "beweis_teilnahme":                     "keine Info",
+        "beweis_ausschreibungen_website":       "keine Info",
+        "meinung":                              reason,
+    }
+
+
+# ── BidFit-Kontext (einmalig für alle Dateien) ───────────────────────────────
+
+def fetch_bidfit_context() -> str:
+    """
+    Lädt per Web-Suche gründliche Informationen über BidFit.
+    Wird einmal beim Start geladen und für alle CSV-Dateien wiederverwendet.
+    """
+    print("Lade BidFit-Kontext per Web-Suche (einmalig für alle Listen)...")
+    try:
+        response = client.responses.create(
+            model=MODEL,
+            tools=[{"type": "web_search_preview"}],
+            input=(
+                "Besuche https://www.bidfit.de/ vollständig – alle Unterseiten, die du "
+                "findest (z. B. /about, /features, /leistungen, /de, /en). "
+                "Fasse auf Deutsch in 6–10 präzisen Sätzen zusammen:\n"
+                "1. Was macht BidFit genau?\n"
+                "2. Welches Problem löst BidFit?\n"
+                "3. Für welche Art von Unternehmen und Branchen ist BidFit gedacht?\n"
+                "4. Welchen konkreten Mehrwert hat BidFit für seine Kunden?\n"
+                "5. Was unterscheidet BidFit von manuellen Prozessen?"
+            ),
+        )
+        ctx = extract_text(response)
+        if ctx:
+            print(f"  → BidFit-Kontext geladen ({len(ctx)} Zeichen).\n")
+            return ctx
+    except Exception as e:
+        print(f"  WARNUNG: Web-Suche für BidFit fehlgeschlagen ({e}). Nutze Fallback.\n")
+
+    return (
+        "BidFit (https://www.bidfit.de/) ist ein KI-gestütztes SaaS-Tool, das "
+        "Ausschreibungs- und Tender-Management-Prozesse für Unternehmen automatisiert "
+        "und vereinfacht – insbesondere in der Logistik- und Supply-Chain-Branche. "
+        "BidFit richtet sich an zwei Zielgruppen: (A) Unternehmen, die als Bieter "
+        "an externen Ausschreibungen/Vergabeverfahren teilnehmen, sowie (B) Unternehmen, "
+        "die selbst Ausschreibungen veröffentlichen und Angebote einholen. "
+        "Das Tool hilft dabei, relevante Ausschreibungen zu identifizieren, zu analysieren "
+        "und effizienter darauf zu reagieren."
+    )
+
+
+# ── Firmenbewertung ──────────────────────────────────────────────────────────
+
+def analyze_company(
+    company_name: str,
+    description:  str,
+    position:     str,
+    company_url:  str,
+    keyword:      str,
+) -> dict:
+    """
+    Bewertet eine einzelne Firma mit GPT + Web-Suche.
+    Das keyword wird aus dem Dateinamen abgeleitet und in den Prompt injiziert.
+    """
+    if company_url and company_url.lower() not in ("nan", "", "none"):
+        url_hint = (
+            f"URL aus den Indeed-Daten: {company_url}\n"
+            f"(Prüfe, ob das die echte Firmenwebsite ist – korrigiere falls nötig. "
+            f"Indeed-interne URLs wie 'indeed.com/cmp/...' sind keine Firmenwebsites.)"
+        )
+    else:
+        url_hint = (
+            "Keine URL bekannt – suche im Web selbst nach der offiziellen Website "
+            f"von '{company_name}'."
         )
 
-        # Antwort-Text aus dem Response holen
-        raw_text = response.choices[0].message.content.strip()
+    prompt = f"""Du bist ein präziser, emotionsloser B2B-Sales-Analyst für BidFit.
 
-        # JSON parsen
-        result = json.loads(raw_text)
-        return result
+=== WAS IST BIDFIT? ===
+{BIDFIT_CONTEXT}
 
-    except json.JSONDecodeError:
-        # Falls GPT kein gültiges JSON zurückgibt
-        print(f"  WARNUNG: Ungültiges JSON für '{company_name}' – setze Standardwerte")
-        return {
-            "qualified": False,
-            "score": 0,
-            "evidence": [],
-            "reason": "Fehler beim Parsen der GPT-Antwort"
-        }
+BidFit sucht als potenzielle Kunden Unternehmen, die:
+  (A) Regelmäßig an Ausschreibungen / Tenders / Vergabeverfahren teilnehmen (als Bieter), ODER
+  (B) Selbst Ausschreibungen veröffentlichen und Angebote einholen (als Auftraggeber).
+
+=== WOHER KOMMT DIESE FIRMA? ===
+Diese Firmenliste wurde durch ein Indeed-Scraping mit dem Suchbegriff "{keyword}" erstellt.
+Die Firma hat irgendwann eine Stelle ausgeschrieben, die zu diesem Keyword passte.
+Das ist ein schwacher erster Hinweis – kein Beweis für Tender-Aktivität.
+
+WICHTIG: Indeed-Daten dürfen MAXIMAL 10 % deiner Gesamtbewertung ausmachen.
+Du sollst Indeed NICHT erneut durchsuchen und keine Informationen hauptsächlich von
+Indeed-URLs holen. Nutze externe Quellen: Firmenwebsite, Google, LinkedIn, Xing,
+Unternehmensregister, Branchenverzeichnisse, Pressemitteilungen usw.
+
+Firmenname: {company_name}
+Positionsname (Indeed, max. 10 % Gewichtung): {position}
+Stellenbeschreibung (Indeed, max. 10 % Gewichtung): {description[:800]}
+{url_hint}
+
+=== DEINE AUFGABE – SCHRITT FÜR SCHRITT ===
+
+1. RECHERCHE (Web-Suche aktiv nutzen):
+   - Finde und besuche die offizielle Firmenwebsite
+   - Prüfe Unterseiten: /ausschreibungen, /vergabe, /leistungen, /services, /impressum, /kontakt
+   - Suche: "{company_name} Ausschreibung", "{company_name} Tender", "{company_name} Vergabe"
+   - Suche auf LinkedIn, Xing, Unternehmensregister
+   - Extrahiere Telefonnummer und E-Mail aus dem Impressum
+
+2. BEWERTUNGSFRAGEN:
+   a) Nimmt das Unternehmen an externen Ausschreibungen teil (als Bieter/Dienstleister)?
+   b) Veröffentlicht das Unternehmen selbst Ausschreibungen auf der eigenen Website?
+   c) Welche Kontaktdaten (Telefon, E-Mail) stehen im Impressum?
+   d) Wie lautet die korrekte offizielle Website-URL?
+
+3. SCORING – schonungslos ehrlich:
+   • score  0–20 : Keine Belege, keine Relevanz für BidFit → qualified = false
+   • score 21–49 : Schwache oder indirekte Hinweise         → qualified = false
+   • score 50–79 : Konkrete externe Belege vorhanden        → qualified = true
+   • score 80–100: Starke, mehrfach belegte Tender-Aktivität → qualified = true
+
+   ⚠ Es ist AUSDRÜCKLICH ERWÜNSCHT, dass die Firmen realistisch und kritisch für BidFit bewertet werden.
+   ⚠ Kein score > 30 ohne konkrete externe Belege aus Non-Indeed-Quellen.
+   ⚠ Keine Empathie. Keine Schönfärberei. Wenn keine Evidenz vorhanden ist: score niedrig.
+   ⚠ Wenn du die Website nicht findest oder sie nicht erreichbar ist: score ≤ 15.
+
+=== AUSGABEFORMAT ===
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt.
+Kein Text davor oder danach. Keine Markdown-Backticks. Kein Kommentar.
+
+=== AUSGABE ===
+Nur JSON. Kein Text davor/danach. Keine Markdown-Backticks. Kein Kommentar.
+
+{{
+  "website":  "https://... (offizielle Firmenwebsite) oder null",
+  "telefon":  "Telefonnummer aus Impressum oder null",
+  "email":    "E-Mail-Adresse aus Impressum oder null",
+  "score":    (Integer 0–100),
+  "qualified": (true oder false),
+  "nimmt_an_ausschreibungen_teil":        "Ja" | "Nein" | "keine Info",
+  "schreibt_ausschreibungen_auf_website": "Ja" | "Nein" | "keine Info",
+  "beweis_teilnahme": "Konkreter Fund mit Quellenlink am Ende, z.B. 'Firmenwebsite listet öffentliche Ausschreibungen als Kernleistung (https://firma.de/leistungen)' – oder 'keine Info' – oder 'kein Teilnehmer'",
+  "beweis_ausschreibungen_website": "Konkreter Fund mit Quellenlink am Ende, z.B. 'Vergabeseite auf Firmenwebsite gefunden (https://firma.de/ausschreibungen)' – oder 'keine Info' – oder 'keine Ausschreibungen in der Webseite'",
+  "meinung": "2–3 Sätze: Einschätzung der BidFit-Relevanz + ggf. Anmerkungen zu Fehlern oder Besonderheiten (z.B. 'Website nicht erreichbar', 'Nur telefonisch erreichbar laut Impressum', 'KMU ohne nachweisbare Tender-Aktivität trotz passender Branche', 'Firma ist Behörde und vergabt selbst – kein Bieter')."
+}}"""
+
+    try:
+        response = client.responses.create(
+            model=MODEL,
+            tools=[{"type": "web_search_preview"}],
+            input=prompt,
+        )
+        raw = clean_json(extract_text(response))
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"    WARNUNG: Ungültiges JSON für '{company_name}' – {e}")
+        return _default_result(f"JSON-Fehler: {e}")
     except Exception as e:
-        # Falls ein anderer Fehler auftritt (z.B. API-Problem)
-        print(f"  FEHLER bei '{company_name}': {e}")
-        return {
-            "qualified": False,
-            "score": 0,
-            "evidence": [],
-            "reason": f"API-Fehler: {str(e)}"
-        }
+        print(f"    FEHLER bei '{company_name}': {e}")
+        return _default_result(f"API-Fehler: {str(e)}")
 
 
-def main():
-    # ---- Schritt 1: CSV einlesen ----
-    print("Lese firmenliste.csv ein...")
-    df = pd.read_csv("firmenliste.csv")
-    print(f"  -> {len(df)} Zeilen gefunden\n")
+# ── Eine CSV-Datei verarbeiten ───────────────────────────────────────────────
 
-    # Neue Spalten vorbereiten (leer, werden später befüllt)
-    df["qualified"] = None
-    df["score"] = None
-    df["evidence"] = None
-    df["reason"] = None
+def process_file(csv_path: Path) -> None:
+    """Liest eine gescrapte CSV-Datei ein, bewertet alle Firmen und speichert results."""
+    keyword     = keyword_from_path(csv_path)
+    output_file = output_path_from_input(csv_path)
 
-    # ---- Schritt 2: Jede Zeile analysieren ----
+    print(f"\n{'=' * 60}")
+    print(f"  Datei:    {csv_path.name}")
+    print(f"  Keyword:  {keyword}")
+    print(f"  Ausgabe:  {output_file}")
+    print(f"{'=' * 60}\n")
+
+    df = pd.read_csv(csv_path)
     total = len(df)
+    print(f"  → {total} Firmen gefunden.\n")
+
+    results = []
 
     for index, row in df.iterrows():
-        # Daten aus der Zeile holen (leere Felder = leerer String)
-        company_name = str(row.get("company", "")) or ""
-        description  = str(row.get("description", "")) or ""
-        position     = str(row.get("positionName", "")) or ""
+        company_name = str(row.get("company",         "") or "").strip()
+        description  = str(row.get("description",     "") or "").strip()
+        position     = str(row.get("positionName",    "") or "").strip()
+        company_url  = str(row.get("companyInfo/url", "") or "").strip()
 
-        print(f"[{index + 1}/{total}] Analysiere: {company_name} – {position}")
+        print(f"  [{index + 1}/{total}] {company_name}  –  {position}")
 
-        # GPT-Analyse durchführen
-        result = analyze_company(company_name, description, position)
+        result = analyze_company(
+            company_name, description, position, company_url, keyword
+        )
 
-        # Ergebnisse in den DataFrame schreiben
-        df.at[index, "qualified"] = result.get("qualified", False)
-        df.at[index, "score"]     = result.get("score", 0)
-        df.at[index, "evidence"]  = json.dumps(result.get("evidence", []), ensure_ascii=False)
-        df.at[index, "reason"]    = result.get("reason", "")
+        # Website: GPT-Fund bevorzugen, sonst CSV-URL, sonst "keine Info"
+        website = result.get("website")
+        if not website or str(website).lower() in ("null", "none", ""):
+            website = (
+                company_url
+                if company_url and company_url.lower() not in ("nan", "")
+                else "keine Info"
+            )
 
-        # Kurze Pause zwischen den API-Aufrufen (verhindert Rate-Limit-Fehler)
-        time.sleep(0.3)
+        results.append({
+            "Firmenname":                            company_name,
+            "Website":                               website,
+            "Kontakt Telefon":                       result.get("telefon") or "keine Info",
+            "Kontakt E-Mail":                        result.get("email")   or "keine Info",
+            "Score (/100)":                          result.get("score", 0),
+            "Qualified":                             "Ja" if result.get("qualified") else "Nein",
+            "Nimmt an Ausschreibungen teil":         result.get("nimmt_an_ausschreibungen_teil",        "keine Info"),
+            "Schreibt Ausschreibungen auf Website":  result.get("schreibt_ausschreibungen_auf_website", "keine Info"),
+            "Beweis Teilnahme":                      result.get("beweis_teilnahme",                     "keine Info"),
+            "Beweis Ausschreibungen auf Website":    result.get("beweis_ausschreibungen_website",        "keine Info"),
+            "Meinung / Anmerkungen":                 result.get("meinung", ""),
+        })
 
-    # ---- Schritt 3: Ergebnisse speichern ----
-    output_file = "results.csv"
-    df.to_csv(output_file, index=False, encoding="utf-8-sig")
-    # utf-8-sig sorgt dafür, dass Excel Umlaute richtig anzeigt
+        time.sleep(2.0)  # Pause: Web-Suche braucht mehr Zeit als reine Completions
 
-    # Zusammenfassung anzeigen
-    qualified_count = df["qualified"].sum()
-    print(f"\nFertig! Gespeichert als '{output_file}'")
-    print(f"Qualifizierte Unternehmen: {qualified_count} von {total}")
+    results_df = pd.DataFrame(results)
+    results_df.to_csv(output_file, index=False, encoding="utf-8-sig")
+    # utf-8-sig: Excel zeigt Umlaute korrekt an
+
+    qualified = results_df["Qualified"].value_counts().get("Ja", 0)
+    print(f"\n  → Gespeichert: {output_file}")
+    print(f"  → Qualifiziert: {qualified} von {total}\n")
 
 
-# Script starten
+# ── Hauptprogramm ────────────────────────────────────────────────────────────
+
+def main():
+    global BIDFIT_CONTEXT
+
+    # Ordner anlegen falls nicht vorhanden
+    Path(INPUT_FOLDER).mkdir(exist_ok=True)
+    Path(OUTPUT_FOLDER).mkdir(exist_ok=True)
+
+    # Alle CSV-Dateien im Eingabe-Ordner finden
+    input_files = sorted(Path(INPUT_FOLDER).glob("*.csv"))
+
+    if not input_files:
+        print(f"Keine CSV-Dateien in '{INPUT_FOLDER}/' gefunden.")
+        print(f"Lege deine gescrapten Listen dort ab und starte neu.")
+        print(f"Namensschema: <keyword>IndeedScraped.csv")
+        print(f"  z.B. tenderManagerIndeedScraped.csv")
+        return
+
+    print(f"Gefundene Listen ({len(input_files)}):")
+    for f in input_files:
+        print(f"  • {f.name}  →  {output_path_from_input(f).name}")
+    print()
+
+    # BidFit-Kontext einmalig laden – gilt für alle Dateien
+    BIDFIT_CONTEXT = fetch_bidfit_context()
+
+    # Alle Dateien der Reihe nach verarbeiten
+    for csv_path in input_files:
+        process_file(csv_path)
+
+    print("=" * 60)
+    print(f"Alle Listen verarbeitet. Ergebnisse in '{OUTPUT_FOLDER}/'")
+
+
 if __name__ == "__main__":
     main()
