@@ -60,7 +60,7 @@ BIDFIT_CONTEXT: str = ""  # Einmalig beim Start befüllt, gilt für alle Dateien
 
 def words_to_camel(text: str) -> str:
     """
-    Wandelt einen Keyword-String in camelCase um (für den Ausgabe-Dateinamen).
+    Wandelt einen Keyword-String in camelCase um (für den Ausgabe-Dateinamen). ok
       'Tender Manager'              → 'tenderManager'
       'Key Account Manager Logistik'→ 'keyAccountManagerLogistik'
       '3PL'                         → '3PL'
