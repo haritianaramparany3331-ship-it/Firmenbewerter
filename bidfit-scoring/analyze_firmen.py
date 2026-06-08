@@ -50,10 +50,7 @@ client = OpenAI(api_key=API_KEY)
 
 # Keywords für spätere Verwendung (momentan nicht aktiv im Prompt)
 KEYWORDS = [
-    "Tender Management", "Tender Manager", "Bid Management",
-    "Ausschreibungsmanagement", "Angebotsmanagement", "Kontraktlogistik",
-    "3PL", "Supply Chain Solutions", "Strategic Sales",
-    "Key Account Manager Logistik",
+    "Tender Manager Logistics"
 ]
 
 BIDFIT_CONTEXT: str = ""  # Einmalig beim Start befüllt, gilt für alle Dateien
@@ -61,40 +58,25 @@ BIDFIT_CONTEXT: str = ""  # Einmalig beim Start befüllt, gilt für alle Dateien
 
 # ── Dateinamen-Hilfsfunktionen ───────────────────────────────────────────────
 
-def camel_to_words(text: str) -> str:
+def words_to_camel(text: str) -> str:
     """
-    Wandelt camelCase in lesbare Wörter um.
-      tenderManager          → Tender Manager
-      keyAccountManagerLogistik → Key Account Manager Logistik
-      3PL                    → 3PL
-      spedition              → Spedition
+    Wandelt einen Keyword-String in camelCase um (für den Ausgabe-Dateinamen).
+      'Tender Manager'              → 'tenderManager'
+      'Key Account Manager Logistik'→ 'keyAccountManagerLogistik'
+      '3PL'                         → '3PL'
     """
-    result = re.sub(r'([a-z])([A-Z])', r'\1 \2', text).strip()
-    return (result[0].upper() + result[1:]) if result else text
+    words = text.strip().split()
+    if not words:
+        return "output"
+    return words[0].lower() + "".join(w.capitalize() for w in words[1:])
 
-
-def keyword_from_path(filepath: Path) -> str:
+def output_path_from_keyword(keyword: str) -> Path:
     """
-    Leitet das Suchkeyword aus dem Dateinamen ab.
-      tenderManagerIndeedScraped.csv → 'Tender Manager'
-      speditionIndeedScraped.csv     → 'Spedition'
-      3PLIndeedScraped.csv           → '3PL'
-    Falls kein 'IndeedScraped'-Suffix vorhanden: Dateiname direkt nutzen.
+    Berechnet den Ausgabepfad aus dem Keyword.
+      'Tender Manager' → results/tenderManagerResult.csv
+      '3PL'            → results/3PLResult.csv
     """
-    stem = filepath.stem  # z.B. tenderManagerIndeedScraped
-    base = re.sub(r'[Ii]ndeed[Ss]craped$', '', stem).strip() or stem
-    return camel_to_words(base)
-
-
-def output_path_from_input(filepath: Path) -> Path:
-    """
-    Berechnet den Ausgabepfad aus dem Eingabepfad.
-      gescrapte_listen/tenderManagerIndeedScraped.csv
-        → results/tenderManagerResult.csv
-    """
-    stem = filepath.stem
-    base = re.sub(r'[Ii]ndeed[Ss]craped$', '', stem).strip() or stem
-    return Path(OUTPUT_FOLDER) / f"{base}Result.csv"
+    return Path(OUTPUT_FOLDER) / f"{words_to_camel(keyword)}Result.csv"
 
 
 # ── Allgemeine Hilfsfunktionen ───────────────────────────────────────────────
@@ -294,10 +276,9 @@ Nur JSON. Kein Text davor/danach. Keine Markdown-Backticks. Kein Kommentar.
 
 # ── Eine CSV-Datei verarbeiten ───────────────────────────────────────────────
 
-def process_file(csv_path: Path) -> None:
+def process_file(csv_path: Path, keyword: str) -> None:
     """Liest eine gescrapte CSV-Datei ein, bewertet alle Firmen und speichert results."""
-    keyword     = keyword_from_path(csv_path)
-    output_file = output_path_from_input(csv_path)
+    output_file = output_path_from_keyword(keyword)
 
     print(f"\n{'=' * 60}")
     print(f"  Datei:    {csv_path.name}")
@@ -376,17 +357,28 @@ def main():
         print(f"  z.B. tenderManagerIndeedScraped.csv")
         return
 
-    print(f"Gefundene Listen ({len(input_files)}):")
-    for f in input_files:
-        print(f"  • {f.name}  →  {output_path_from_input(f).name}")
+    # Keyword-Liste und Datei-Liste koppeln
+    pairs = list(zip(input_files, KEYWORDS))
+ 
+    if len(input_files) > len(KEYWORDS):
+        print(f"WARNUNG: {len(input_files)} Dateien, aber nur {len(KEYWORDS)} Keywords.")
+        print(f"  Die letzten {len(input_files) - len(KEYWORDS)} Datei(en) werden übersprungen.")
+        print(f"  → Keywords in KEYWORDS-Liste ergänzen und neu starten.\n")
+    elif len(KEYWORDS) > len(input_files):
+        print(f"INFO: {len(KEYWORDS)} Keywords, aber nur {len(input_files)} Datei(en).")
+        print(f"  Nicht benötigte Keywords werden ignoriert.\n")
+ 
+    print(f"Gefundene Listen ({len(pairs)}):")
+    for csv_path, kw in pairs:
+        print(f"  • [{kw}]  {csv_path.name}  →  {output_path_from_keyword(kw).name}")
     print()
 
     # BidFit-Kontext einmalig laden – gilt für alle Dateien
     BIDFIT_CONTEXT = fetch_bidfit_context()
 
-    # Alle Dateien der Reihe nach verarbeiten
-    for csv_path in input_files:
-        process_file(csv_path)
+    # Alle Paare der Reihe nach verarbeiten
+    for csv_path, keyword in pairs:
+        process_file(csv_path, keyword)
 
     print("=" * 60)
     print(f"Alle Listen verarbeitet. Ergebnisse in '{OUTPUT_FOLDER}/'")
