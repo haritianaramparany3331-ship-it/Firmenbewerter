@@ -6,12 +6,6 @@ from openai import OpenAI
 
 
 def words_to_camel(text: str) -> str:
-    """
-    Wandelt einen Keyword-String in camelCase um (für den Ausgabe-Dateinamen). ok
-      'Tender Manager'              → 'tenderManager'
-      'Key Account Manager Logistik'→ 'keyAccountManagerLogistik'
-      '3PL'                         → '3PL'
-    """
     words = text.strip().split()
     if not words:
         return "output"
@@ -19,16 +13,10 @@ def words_to_camel(text: str) -> str:
 
 
 def output_path_from_keyword(keyword: str, output_folder: str) -> Path:
-    """
-    Berechnet den Ausgabepfad aus dem Keyword.
-      'Tender Manager' → results/tenderManagerResult.csv
-      '3PL'            → results/3PLResult.csv
-    """
     return Path(output_folder) / f"{words_to_camel(keyword)}Result.csv"
 
 
 def extract_text(response) -> str:
-    """Extrahiert reinen Text aus einer OpenAI Responses-API-Antwort."""
     parts = []
     try:
         for item in response.output:
@@ -43,7 +31,6 @@ def extract_text(response) -> str:
 
 
 def clean_json(raw: str) -> str:
-    """Entfernt Markdown-Backticks, die das Modell manchmal trotz Anweisung setzt."""
     raw = raw.strip()
     if raw.startswith("```"):
         lines = [l for l in raw.split("\n") if not l.strip().startswith("```")]
@@ -52,7 +39,6 @@ def clean_json(raw: str) -> str:
 
 
 def _default_result(reason: str) -> dict:
-    """Standardwerte bei API-Fehler oder ungültigem JSON."""
     return {
         "website":                              None,
         "telefon":                              None,
@@ -67,10 +53,6 @@ def _default_result(reason: str) -> dict:
     }
 
 def fetch_bidfit_context(client: OpenAI, model: str) -> str:
-    """
-    Lädt per Web-Suche gründliche Informationen über BidFit.
-    Wird einmal beim Start geladen und für alle CSV-Dateien wiederverwendet.
-    """
     print("Lade BidFit-Kontext per Web-Suche (einmalig für alle Listen)...")
     try:
         response = client.responses.create(
@@ -116,10 +98,6 @@ def analyze_company(
     client: OpenAI,
     model: str
 ) -> dict:
-    """
-    Bewertet eine einzelne Firma mit GPT + Web-Suche.
-    Das keyword wird aus dem Dateinamen abgeleitet und in den Prompt injiziert.
-    """
     if company_url and company_url.lower() not in ("nan", "", "none"):
         url_hint = (
             f"URL aus den Indeed-Daten: {company_url}\n"
@@ -220,7 +198,6 @@ Nur JSON. Kein Text davor/danach. Keine Markdown-Backticks. Kein Kommentar.
 
 
 def process_file(csv_path: Path, keyword: str, output_folder: str, bidfit_kontext: str, client: OpenAI, model: str) -> None:
-    """Liest eine gescrapte CSV-Datei ein, bewertet alle Firmen und speichert results."""
     output_file = output_path_from_keyword(keyword, output_folder)
 
     print(f"\n{'=' * 60}")
@@ -247,7 +224,6 @@ def process_file(csv_path: Path, keyword: str, output_folder: str, bidfit_kontex
             company_name, description, position, company_url, keyword, bidfit_kontext, client, model
         )
 
-        # Website: GPT-Fund bevorzugen, sonst CSV-URL, sonst "keine Info"
         website = result.get("website")
         if not website or str(website).lower() in ("null", "none", ""):
             website = (
@@ -270,11 +246,10 @@ def process_file(csv_path: Path, keyword: str, output_folder: str, bidfit_kontex
             "Meinung / Anmerkungen":                 result.get("meinung", ""),
         })
 
-        time.sleep(2.0)  # Pause: Web-Suche braucht mehr Zeit als reine Completions
+        time.sleep(2.0) 
 
     results_df = pd.DataFrame(results)
     results_df.to_csv(output_file, index=False, encoding="utf-8-sig")
-    # utf-8-sig: Excel zeigt Umlaute korrekt an
 
     qualified = results_df["Qualified"].value_counts().get("Ja", 0)
     print(f"\n  → Gespeichert: {output_file}")
