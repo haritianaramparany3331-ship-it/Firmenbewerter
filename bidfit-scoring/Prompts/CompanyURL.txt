@@ -1,3 +1,0 @@
-URL aus den Indeed-Daten: {company_url}\n
-(Prüfe, ob das die echte Firmenwebsite ist – korrigiere falls nötig.
-Indeed-interne URLs wie 'indeed.com/cmp/...' sind keine Firmenwebsites.)
