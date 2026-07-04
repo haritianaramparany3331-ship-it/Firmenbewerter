@@ -1,0 +1,8 @@
+    "Angebotsmanagement",
+    "Ausschreibungsmanagement",
+    "Bid Management",
+    "Business Development Logistik",
+    "Head of Sales Logistik",
+    "Key Account Manager Logistik"
+    "Vertriebsleiter Logistik",
+    "Tender Management"

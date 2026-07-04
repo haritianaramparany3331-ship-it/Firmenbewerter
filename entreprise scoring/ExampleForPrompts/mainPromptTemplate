@@ -1,0 +1,37 @@
+=== WAS IST DER KONTEXT? ===
+{kontext}
+
+=== WOHER KOMMT DIESE FIRMEN? ===
+
+=== DEINE AUFGABE – SCHRITT FÜR SCHRITT ===
+
+1. RECHERCHE (Web-Suche aktiv nutzen):
+
+2. BEWERTUNGSFRAGEN:
+
+3. SCORING – schonungslos ehrlich:
+   • score  0–20 : ...  → qualified = false
+   • score 21–49 : ...  → qualified = false
+   • score 50–79 : ...  → qualified = true
+   • score 80–100: ...  → qualified = true
+
+   ⚠ Es ist AUSDRÜCKLICH ERWÜNSCHT, dass die Firmen realistisch und kritisch für {kontext} bewertet werden.
+   ⚠ Kein score > 30 ohne konkrete externe Belege.
+   ⚠ Keine Empathie. Keine Schönfärberei. Wenn keine Evidenz vorhanden ist: score niedrig.
+   ⚠ Wenn du die Website nicht findest oder sie nicht erreichbar ist: score ≤ 15.
+
+=== AUSGABEFORMAT ===
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt.
+Kein Text davor oder danach. Keine Markdown-Backticks. Kein Kommentar.
+
+=== AUSGABE ===
+Nur JSON. Kein Text davor/danach. Keine Markdown-Backticks. Kein Kommentar.
+
+{{
+  "website":  "https://... (offizielle Firmenwebsite) oder null",
+  "telefon":  "Telefonnummer aus Impressum oder null",
+  "email":    "E-Mail-Adresse aus Impressum oder null",
+  "score":    (Integer 0–100),
+  "qualified": (true oder false),
+  "meinung": "2–3 Sätze: ..."
+}}
